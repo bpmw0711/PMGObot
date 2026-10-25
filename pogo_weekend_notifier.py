@@ -6,9 +6,10 @@ Pokémon GO 週末活動通知器
   1. LeekDuck 活動行事曆（經 ScrapedDuck 轉成 JSON）：有精確起訖時間，用來判斷「這週末」
   2. Pokémon GO 官網新聞頁：抓最新的活動相關公告標題與連結，附在通知裡
 
-通知方式（擇一，用環境變數設定）
-  A. DISCORD_WEBHOOK_URL                      → 發到某個頻道（最簡單）
-  B. DISCORD_BOT_TOKEN + DISCORD_USER_ID      → 機器人私訊你
+通知方式（可同時設定多種，有設的都會發；多個 ID 用逗號分隔）
+  DISCORD_WEBHOOK_URL                         → 用 Webhook 發到某個頻道
+  DISCORD_BOT_TOKEN + DISCORD_USER_ID         → 機器人私訊這些人
+  DISCORD_BOT_TOKEN + DISCORD_CHANNEL_IDS     → 機器人發到這些伺服器頻道
 
 本機測試：python pogo_weekend_notifier.py --dry-run
 """
@@ -288,27 +289,56 @@ def send_via_webhook(webhook_url: str, payload: dict) -> None:
     resp.raise_for_status()
 
 
+DISCORD_API = "https://discord.com/api/v10"
+
+
+def _bot_headers(token: str) -> dict:
+    return {"Authorization": f"Bot {token}", "Content-Type": "application/json"}
+
+
+def send_to_channel(token: str, channel_id: str, payload: dict) -> None:
+    resp = requests.post(f"{DISCORD_API}/channels/{channel_id}/messages",
+                         headers=_bot_headers(token), json=payload, timeout=30)
+    resp.raise_for_status()
+
+
 def send_via_bot_dm(token: str, user_id: str, payload: dict) -> None:
-    api = "https://discord.com/api/v10"
-    headers = {"Authorization": f"Bot {token}", "Content-Type": "application/json"}
-    dm = requests.post(f"{api}/users/@me/channels", headers=headers,
+    dm = requests.post(f"{DISCORD_API}/users/@me/channels", headers=_bot_headers(token),
                        json={"recipient_id": user_id}, timeout=30)
     dm.raise_for_status()
-    channel_id = dm.json()["id"]
-    resp = requests.post(f"{api}/channels/{channel_id}/messages", headers=headers,
-                         json=payload, timeout=30)
-    resp.raise_for_status()
+    send_to_channel(token, dm.json()["id"], payload)
+
+
+def _ids(name: str) -> list[str]:
+    return [x.strip() for x in os.getenv(name, "").split(",") if x.strip()]
 
 
 def send(payload: dict) -> None:
     webhook = os.getenv("DISCORD_WEBHOOK_URL")
-    token, user_id = os.getenv("DISCORD_BOT_TOKEN"), os.getenv("DISCORD_USER_ID")
+    token = os.getenv("DISCORD_BOT_TOKEN")
+    targets = []
     if webhook:
-        send_via_webhook(webhook, payload)
-    elif token and user_id:
-        send_via_bot_dm(token, user_id, payload)
-    else:
-        raise SystemExit("請設定 DISCORD_WEBHOOK_URL，或 DISCORD_BOT_TOKEN + DISCORD_USER_ID")
+        targets.append(("Webhook", lambda: send_via_webhook(webhook, payload)))
+    if token:
+        for uid in _ids("DISCORD_USER_ID"):
+            targets.append((f"私訊 {uid}", lambda uid=uid: send_via_bot_dm(token, uid, payload)))
+        for cid in _ids("DISCORD_CHANNEL_IDS"):
+            targets.append((f"頻道 {cid}", lambda cid=cid: send_to_channel(token, cid, payload)))
+    if not targets:
+        raise SystemExit("請設定 DISCORD_WEBHOOK_URL，或 DISCORD_BOT_TOKEN 加上 "
+                         "DISCORD_USER_ID / DISCORD_CHANNEL_IDS")
+
+    failed = 0
+    for label, do_send in targets:   # 一個失敗不影響其他人
+        try:
+            do_send()
+            print(f"✅ {label}")
+        except requests.RequestException as exc:
+            failed += 1
+            detail = getattr(exc.response, "text", "")[:200] if exc.response is not None else ""
+            print(f"❌ {label}：{exc} {detail}", file=sys.stderr)
+    if failed:
+        raise SystemExit(f"{failed}/{len(targets)} 個對象發送失敗")
 
 
 # ---------- 主程式 ----------
