@@ -2,10 +2,9 @@ name: Pokémon GO 週末活動通知
 
 on:
   schedule:
-    # 每週五 台灣時間 09:07（= UTC 週五 01:07）
-    - cron: "7 1 * * 5"
-    # 測試用：週日 台灣時間 20:00（= UTC 週日 12:00）
-    - cron: "*/15 * * * *"
+    # 每週四 台灣時間 09:07（= UTC 週四 01:07）
+    - cron: "7 1 * * 4"
+
   workflow_dispatch:
 
 jobs:
